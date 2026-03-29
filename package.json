@@ -10,6 +10,8 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@polymarket/builder-relayer-client": "^0.0.8",
+    "@polymarket/builder-signing-sdk": "^1.0.0",
     "better-sqlite3": "^12.8.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.9",
