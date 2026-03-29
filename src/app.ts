@@ -22,29 +22,38 @@ export const createApp = (deps: CreateUserServiceDeps = {}) => {
     if (!isRecord(payload)) {
       return c.json(
         {
-          error: "`displayName` and `phoneNumber` are required non-empty strings.",
+          error:
+            "`clerkUserId`, `username`, and `phoneNumber` are required non-empty strings.",
         },
         400,
       );
     }
 
-    const displayName =
-      typeof payload.displayName === "string" ? payload.displayName.trim() : "";
+    const clerkUserId =
+      typeof payload.clerkUserId === "string" ? payload.clerkUserId.trim() : "";
+    const username =
+      typeof payload.username === "string" ? payload.username.trim() : "";
     const phoneNumber =
       typeof payload.phoneNumber === "string" ? payload.phoneNumber.trim() : "";
 
-    if (!displayName || !phoneNumber) {
+    if (!clerkUserId || !username || !phoneNumber) {
       return c.json(
         {
-          error: "`displayName` and `phoneNumber` are required non-empty strings.",
+          error:
+            "`clerkUserId`, `username`, and `phoneNumber` are required non-empty strings.",
         },
         400,
       );
     }
 
     try {
-      const user = await createUser({ displayName, phoneNumber });
-      return c.json({ user }, 201);
+      const result = await createUser({
+        clerkUserId,
+        username,
+        phoneNumber,
+      });
+
+      return c.json(result, result.created ? 201 : 200);
     } catch (error) {
       if (error instanceof Error && "status" in error) {
         const status = Number(error.status);

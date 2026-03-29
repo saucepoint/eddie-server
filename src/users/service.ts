@@ -10,18 +10,25 @@ import { getDb, type AppDatabase } from "../db/client";
 import { users } from "../db/schema";
 
 export type CreateUserInput = {
-  displayName: string;
+  clerkUserId: string;
+  username: string;
   phoneNumber: string;
 };
 
 export type PublicUser = {
   id: number;
-  displayName: string;
+  clerkUserId: string;
+  username: string;
   phoneNumber: string;
   walletAddress: string;
   safeAddress: string;
   safeDeploymentTransactionHash: string;
   approvalTransactionHash: string;
+};
+
+export type ProvisionUserResult = {
+  created: boolean;
+  user: PublicUser;
 };
 
 type BootstrapWallet = (config: RuntimeConfig) => Promise<WalletBootstrapResult>;
@@ -48,7 +55,8 @@ const insertUser = (
   db
     .insert(users)
     .values({
-      displayName: input.displayName,
+      clerkUserId: input.clerkUserId,
+      username: input.username,
       phoneNumber: input.phoneNumber,
       encryptedPrivateKey,
       walletAddress: wallet.walletAddress,
@@ -60,7 +68,8 @@ const insertUser = (
     })
     .returning({
       id: users.id,
-      displayName: users.displayName,
+      clerkUserId: users.clerkUserId,
+      username: users.username,
       phoneNumber: users.phoneNumber,
       walletAddress: users.walletAddress,
       safeAddress: users.safeAddress,
@@ -75,15 +84,37 @@ export const createUserService = ({
   loadRuntimeConfig: loadConfig = loadRuntimeConfig,
   encryptPrivateKey: encrypt = encryptPrivateKey,
 }: CreateUserServiceDeps = {}) => {
-  return async (input: CreateUserInput): Promise<PublicUser> => {
+  return async (input: CreateUserInput): Promise<ProvisionUserResult> => {
     const db = injectedDb ?? getDb();
     const existingUser = db
+      .select({
+        id: users.id,
+        clerkUserId: users.clerkUserId,
+        username: users.username,
+        phoneNumber: users.phoneNumber,
+        walletAddress: users.walletAddress,
+        safeAddress: users.safeAddress,
+        safeDeploymentTransactionHash: users.safeDeploymentTransactionHash,
+        approvalTransactionHash: users.approvalTransactionHash,
+      })
+      .from(users)
+      .where(eq(users.clerkUserId, input.clerkUserId))
+      .get();
+
+    if (existingUser) {
+      return {
+        created: false,
+        user: existingUser,
+      };
+    }
+
+    const phoneConflict = db
       .select({ id: users.id })
       .from(users)
       .where(eq(users.phoneNumber, input.phoneNumber))
       .get();
 
-    if (existingUser) {
+    if (phoneConflict) {
       throw new ConflictError("A user with that phone number already exists.");
     }
 
@@ -92,8 +123,35 @@ export const createUserService = ({
     const encryptedKey = encrypt(wallet.privateKey, config.encryptionKey);
 
     try {
-      return insertUser(db, input, encryptedKey, wallet);
+      return {
+        created: true,
+        user: insertUser(db, input, encryptedKey, wallet),
+      };
     } catch (error) {
+      if (isUniqueConstraintError(error, "clerk_user_id")) {
+        const retriedUser = db
+          .select({
+            id: users.id,
+            clerkUserId: users.clerkUserId,
+            username: users.username,
+            phoneNumber: users.phoneNumber,
+            walletAddress: users.walletAddress,
+            safeAddress: users.safeAddress,
+            safeDeploymentTransactionHash: users.safeDeploymentTransactionHash,
+            approvalTransactionHash: users.approvalTransactionHash,
+          })
+          .from(users)
+          .where(eq(users.clerkUserId, input.clerkUserId))
+          .get();
+
+        if (retriedUser) {
+          return {
+            created: false,
+            user: retriedUser,
+          };
+        }
+      }
+
       if (isUniqueConstraintError(error, "phone_number")) {
         throw new ConflictError("A user with that phone number already exists.");
       }

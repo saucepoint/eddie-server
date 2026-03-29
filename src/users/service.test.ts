@@ -36,6 +36,13 @@ const createRequest = (body: unknown) =>
     body: JSON.stringify(body),
   });
 
+const createProvisionBody = (overrides: Record<string, unknown> = {}) => ({
+  clerkUserId: "user_123",
+  username: "alice",
+  phoneNumber: "555-0101",
+  ...overrides,
+});
+
 describe("POST /user", () => {
   let sqlite: ReturnType<typeof createDatabaseClient>["sqlite"];
   let db: ReturnType<typeof createDatabaseClient>["db"];
@@ -60,10 +67,26 @@ describe("POST /user", () => {
     await sqlite.close();
   });
 
-  test("returns 409 and never bootstraps when the phone already exists", async () => {
+  test("returns 400 when required fields are missing", async () => {
+    const app = createApp({ db });
+    const response = await app.request(
+      createRequest({ phoneNumber: "555-0100" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({
+      error:
+        "`clerkUserId`, `username`, and `phoneNumber` are required non-empty strings.",
+    });
+    await sqlite.close();
+  });
+
+  test("returns 200 and never bootstraps when the Clerk user already exists", async () => {
     db.insert(users)
       .values({
-        displayName: "Existing",
+        clerkUserId: "user_123",
+        username: "existing",
         phoneNumber: "555-0100",
         encryptedPrivateKey: "encrypted",
         walletAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -88,7 +111,70 @@ describe("POST /user", () => {
     });
 
     const response = await app.request(
-      createRequest({ displayName: "Alice", phoneNumber: "555-0100" }),
+      createRequest(
+        createProvisionBody({
+          username: "alice-next",
+          phoneNumber: "555-0101",
+        }),
+      ),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      created: false,
+      user: {
+        id: 1,
+        clerkUserId: "user_123",
+        username: "existing",
+        phoneNumber: "555-0100",
+        walletAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        safeAddress: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        safeDeploymentTransactionHash:
+          "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        approvalTransactionHash:
+          "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      },
+    });
+    expect(called).toBe(false);
+    await sqlite.close();
+  });
+
+  test("returns 409 and never bootstraps when the phone already exists for another Clerk user", async () => {
+    db.insert(users)
+      .values({
+        clerkUserId: "user_existing",
+        username: "existing",
+        phoneNumber: "555-0100",
+        encryptedPrivateKey: "encrypted",
+        walletAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        safeAddress: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        safeDeploymentTransactionId: "deploy-existing",
+        safeDeploymentTransactionHash:
+          "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        approvalTransactionId: "approval-existing",
+        approvalTransactionHash:
+          "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      })
+      .run();
+
+    let called = false;
+    const app = createApp({
+      db,
+      loadRuntimeConfig: () => testConfig,
+      bootstrapWallet: async () => {
+        called = true;
+        return bootstrapResult;
+      },
+    });
+
+    const response = await app.request(
+      createRequest(
+        createProvisionBody({
+          clerkUserId: "user_other",
+          phoneNumber: "555-0100",
+        }),
+      ),
     );
     const body = await response.json();
 
@@ -108,25 +194,31 @@ describe("POST /user", () => {
     });
 
     const response = await app.request(
-      createRequest({ displayName: "Alice", phoneNumber: "555-0101" }),
+      createRequest(createProvisionBody()),
     );
     const body = await response.json();
 
     expect(response.status).toBe(201);
-    expect(body.user).toMatchObject({
-      id: 1,
-      displayName: "Alice",
-      phoneNumber: "555-0101",
-      walletAddress: bootstrapResult.walletAddress,
-      safeAddress: bootstrapResult.safeAddress,
-      safeDeploymentTransactionHash:
-        bootstrapResult.safeDeploymentTransactionHash,
-      approvalTransactionHash: bootstrapResult.approvalTransactionHash,
+    expect(body).toMatchObject({
+      created: true,
+      user: {
+        id: 1,
+        clerkUserId: "user_123",
+        username: "alice",
+        phoneNumber: "555-0101",
+        walletAddress: bootstrapResult.walletAddress,
+        safeAddress: bootstrapResult.safeAddress,
+        safeDeploymentTransactionHash:
+          bootstrapResult.safeDeploymentTransactionHash,
+        approvalTransactionHash: bootstrapResult.approvalTransactionHash,
+      },
     });
 
     const stored = db.select().from(users).where(eq(users.id, 1)).get();
 
     expect(stored).toBeDefined();
+    expect(stored?.clerkUserId).toBe("user_123");
+    expect(stored?.username).toBe("alice");
     expect(stored?.encryptedPrivateKey).not.toBe(bootstrapResult.privateKey);
     expect(
       decryptPrivateKey(stored!.encryptedPrivateKey, testConfig.encryptionKey),
@@ -144,7 +236,12 @@ describe("POST /user", () => {
     });
 
     const response = await app.request(
-      createRequest({ displayName: "Alice", phoneNumber: "555-0102" }),
+      createRequest(
+        createProvisionBody({
+          clerkUserId: "user_124",
+          phoneNumber: "555-0102",
+        }),
+      ),
     );
 
     expect(response.status).toBe(502);
@@ -162,7 +259,12 @@ describe("POST /user", () => {
     });
 
     const response = await app.request(
-      createRequest({ displayName: "Alice", phoneNumber: "555-0103" }),
+      createRequest(
+        createProvisionBody({
+          clerkUserId: "user_125",
+          phoneNumber: "555-0103",
+        }),
+      ),
     );
 
     expect(response.status).toBe(502);
@@ -173,7 +275,8 @@ describe("POST /user", () => {
   test("returns 500 when the insert fails after bootstrap", async () => {
     db.insert(users)
       .values({
-        displayName: "Existing",
+        clerkUserId: "user_existing",
+        username: "existing",
         phoneNumber: "555-0199",
         encryptedPrivateKey: "encrypted",
         walletAddress: bootstrapResult.walletAddress,
@@ -194,7 +297,12 @@ describe("POST /user", () => {
     });
 
     const response = await app.request(
-      createRequest({ displayName: "Alice", phoneNumber: "555-0104" }),
+      createRequest(
+        createProvisionBody({
+          clerkUserId: "user_126",
+          phoneNumber: "555-0104",
+        }),
+      ),
     );
 
     expect(response.status).toBe(500);
@@ -209,7 +317,8 @@ describe("POST /user", () => {
 
     expect(columns.map(column => column.name)).toEqual([
       "id",
-      "display_name",
+      "clerk_user_id",
+      "username",
       "phone_number",
       "encrypted_private_key",
       "wallet_address",

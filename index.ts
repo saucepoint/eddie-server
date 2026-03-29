@@ -1,6 +1,6 @@
 import { createApp } from "./src/app";
 
-const port = Number(Bun.env.PORT ?? 3000);
+const port = Number(Bun.env.PORT ?? 3001);
 const app = createApp();
 
 if (import.meta.main) {
