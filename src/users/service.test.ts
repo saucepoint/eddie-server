@@ -13,6 +13,8 @@ const testConfig: RuntimeConfig = {
   rpcUrl: "https://polygon-rpc.com",
   chainId: 137,
   chain: polygon,
+  gammaHost: "https://gamma-api.polymarket.com",
+  clobHost: "https://clob.polymarket.com",
   builderApiKey: "builder-key",
   builderSecret: "builder-secret",
   builderPassphrase: "builder-passphrase",

@@ -28,7 +28,8 @@ export const resolveEncryptionKey = (rawKey: string) => {
   const base64 = decodeBase64(trimmed);
 
   const candidates = [utf8, hex, base64].filter(
-    (value): value is Buffer => value !== null && value.length === 32,
+    (value): value is Exclude<typeof value, null> =>
+      value !== null && value.length === 32,
   );
 
   if (candidates.length === 0) {
@@ -37,7 +38,7 @@ export const resolveEncryptionKey = (rawKey: string) => {
     );
   }
 
-  return candidates[0];
+  return candidates[0]!;
 };
 
 export const encryptPrivateKey = (privateKey: string, encryptionKey: Buffer) => {

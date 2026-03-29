@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { decodeFunctionData, maxUint256 } from "viem";
+import { decodeFunctionData, maxUint256, type Hex } from "viem";
 import { createApprovalTransactions } from "./approvals";
 import {
   ERC20_APPROVAL_SPENDERS,
@@ -45,7 +45,7 @@ describe("approval transaction builder", () => {
       if (index < ERC20_APPROVAL_SPENDERS.length) {
         const decoded = decodeFunctionData({
           abi: erc20Abi,
-          data: transaction.data,
+          data: transaction.data as Hex,
         });
 
         expect(transaction.to).toBe(POLYMARKET_CONTRACTS.usdc);
@@ -59,7 +59,7 @@ describe("approval transaction builder", () => {
 
       const decoded = decodeFunctionData({
         abi: erc1155Abi,
-        data: transaction.data,
+        data: transaction.data as Hex,
       });
       const spender = ERC1155_APPROVAL_SPENDERS[index - ERC20_APPROVAL_SPENDERS.length];
 
