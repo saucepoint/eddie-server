@@ -213,6 +213,18 @@ describe("Polymarket routes", () => {
 
         return {
           getBalanceAllowance: async () => ({ balance: "100", allowance: "100" }),
+          getOrderBook: async () => ({
+            market: "will-it-rain",
+            asset_id: "token-yes",
+            timestamp: "2026-03-29T00:00:00.000Z",
+            bids: [],
+            asks: [{ price: "0.55", size: "5" }],
+            min_order_size: "5",
+            tick_size: "0.01",
+            neg_risk: false,
+            last_trade_price: "0.55",
+            hash: "book-hash",
+          }),
           calculateMarketPrice: async () => 0.55,
           createAndPostMarketOrder: async order => {
             capturedTokenId = order.tokenID;
@@ -242,7 +254,7 @@ describe("Polymarket routes", () => {
     expect(body).toMatchObject({
       marketSlug: "will-it-rain",
       tokenId: "token-yes",
-      amount: 5,
+      amount: 2.75,
       limitPrice: 0.55,
       orderType: "FOK",
       orderId: "order-1",
@@ -301,6 +313,18 @@ describe("Polymarket routes", () => {
       loadPolymarketTradeConfig: () => tradeConfig,
       buildTradingClient: async () => ({
         getBalanceAllowance: async () => ({ balance: "1", allowance: "1" }),
+        getOrderBook: async () => ({
+          market: "will-it-rain",
+          asset_id: "token-yes",
+          timestamp: "2026-03-29T00:00:00.000Z",
+          bids: [],
+          asks: [{ price: "0.55", size: "5" }],
+          min_order_size: "5",
+          tick_size: "0.01",
+          neg_risk: false,
+          last_trade_price: "0.55",
+          hash: "book-hash",
+        }),
         calculateMarketPrice: async () => 0.55,
         createAndPostMarketOrder: async () => ({
           success: true,
@@ -330,6 +354,69 @@ describe("Polymarket routes", () => {
     expect(attempts[0]?.errorMessage).toBe(
       "Insufficient balance for the requested trade.",
     );
+    await sqlite.close();
+  });
+
+  test("POST /polymarket/trade caps sell orders to the available share balance", async () => {
+    seedUser(db);
+    seedIndexedMarket(db);
+
+    let capturedAmount = 0;
+    const app = createApp({
+      db,
+      loadPolymarketMarketConfig: () => marketConfig,
+      loadPolymarketTradeConfig: () => tradeConfig,
+      buildTradingClient: async () => ({
+        getBalanceAllowance: async () => ({ balance: "3", allowance: "3" }),
+        getOrderBook: async () => ({
+          market: "will-it-rain",
+          asset_id: "token-yes",
+          timestamp: "2026-03-29T00:00:00.000Z",
+          bids: [{ price: "0.42", size: "3" }],
+          asks: [],
+          min_order_size: "5",
+          tick_size: "0.01",
+          neg_risk: false,
+          last_trade_price: "0.42",
+          hash: "book-hash",
+        }),
+        calculateMarketPrice: async (_tokenId, _side, amount) => {
+          capturedAmount = amount;
+          return 0.42;
+        },
+        createAndPostMarketOrder: async () => ({
+          success: true,
+          orderID: "sell-order-1",
+          status: "live",
+          transactionsHashes: ["0xsellhash"],
+        }),
+      }),
+    });
+
+    const response = await app.request(
+      createJsonRequest("/polymarket/trade", {
+        market: "will-it-rain",
+        outcome: "YES",
+        side: "SELL",
+      }),
+    );
+    const body = await response.json();
+    const attempts = db.select().from(polymarketTradeAttempts).all();
+
+    expect(response.status).toBe(200);
+    expect(capturedAmount).toBe(3);
+    expect(body).toMatchObject({
+      marketSlug: "will-it-rain",
+      tokenId: "token-yes",
+      amount: 3,
+      limitPrice: 0.42,
+      orderType: "FOK",
+      orderId: "sell-order-1",
+      transactionHashes: ["0xsellhash"],
+    });
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.amount).toBe("3");
+
     await sqlite.close();
   });
 

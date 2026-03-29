@@ -6,10 +6,11 @@ import {
   SignatureType,
   type ApiKeyCreds,
   type BalanceAllowanceParams,
+  type OrderBookSummary,
 } from "@polymarket/clob-client";
 import { BuilderConfig } from "@polymarket/builder-signing-sdk";
 import { asc, eq } from "drizzle-orm";
-import { createWalletClient, http, type Hex } from "viem";
+import { createWalletClient, http, type Hex, type WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { decryptPrivateKey } from "../crypto/encryption";
 import { getDb, type AppDatabase } from "../db/client";
@@ -30,7 +31,6 @@ import {
   loadTradeRuntimeConfig,
   type TradeRuntimeConfig,
 } from "./config";
-import { JsonRpcProvider, Wallet } from "ethers";
 
 type BalanceAllowanceResponse = {
   balance: string;
@@ -72,6 +72,7 @@ type TradingClient = {
   getBalanceAllowance: (
     params?: BalanceAllowanceParams,
   ) => Promise<BalanceAllowanceResponse>;
+  getOrderBook: (tokenID: string) => Promise<OrderBookSummary>;
   calculateMarketPrice: (
     tokenID: string,
     side: Side,
@@ -100,6 +101,43 @@ type BuildTradingClientArgs = {
   safeAddress: string;
 };
 
+type ApiCredentialClient = Pick<ClobClient, "deriveApiKey" | "createApiKey">;
+
+type CreateWalletClientImpl = (
+  config: TradeRuntimeConfig,
+  privateKey: Hex,
+) => WalletClient;
+
+type CreateApiCredentialClient = (
+  config: TradeRuntimeConfig,
+  walletClient: WalletClient,
+) => ApiCredentialClient;
+
+type CreateAuthenticatedClientArgs = {
+  config: TradeRuntimeConfig;
+  walletClient: WalletClient;
+  apiCreds: ApiKeyCreds;
+  signatureType: SignatureType;
+  safeAddress: string;
+  builderConfig: BuilderConfig;
+};
+
+type CreateAuthenticatedClient = (
+  args: CreateAuthenticatedClientArgs,
+) => TradingClient;
+
+type ResolveTradeApiCredsArgs = {
+  config: TradeRuntimeConfig;
+  walletClient: WalletClient;
+  createApiCredentialClient?: CreateApiCredentialClient;
+};
+
+type CreateTradeClientDeps = {
+  createWalletClientImpl?: CreateWalletClientImpl;
+  createApiCredentialClient?: CreateApiCredentialClient;
+  createAuthenticatedClient?: CreateAuthenticatedClient;
+};
+
 export type BuildTradingClient = (
   args: BuildTradingClientArgs,
 ) => Promise<TradingClient>;
@@ -119,32 +157,90 @@ const createTradingBuilderConfig = (config: TradeRuntimeConfig) =>
     },
   });
 
-const createTradeClient = async ({
+const createTradingWalletClient: CreateWalletClientImpl = (config, privateKey) => {
+  const account = privateKeyToAccount(privateKey);
+
+  return createWalletClient({
+    account,
+    chain: config.chain,
+    transport: http(config.rpcUrl),
+  });
+};
+
+const createTradeApiCredentialClient: CreateApiCredentialClient = (
   config,
-  privateKey,
+  walletClient,
+) => new ClobClient(config.clobHost, config.chainId, walletClient);
+
+export const resolveTradeApiCreds = async ({
+  config,
+  walletClient,
+  createApiCredentialClient = createTradeApiCredentialClient,
+}: ResolveTradeApiCredsArgs): Promise<ApiKeyCreds> => {
+  const client = createApiCredentialClient(config, walletClient);
+
+  try {
+    return await client.deriveApiKey();
+  } catch {
+    return client.createApiKey();
+  }
+};
+
+const createAuthenticatedTradeClient: CreateAuthenticatedClient = ({
+  config,
+  walletClient,
+  apiCreds,
+  signatureType,
   safeAddress,
-}: BuildTradingClientArgs): Promise<TradingClient> => {
-  const account = privateKeyToAccount(privateKey as Hex);
-
-  const builderConfig = createTradingBuilderConfig(config);
-  // const ethersSigner = new Wallet(viemAccount.address, provider);
-  const ethersSigner = new Wallet(privateKey, new JsonRpcProvider(config.rpcUrl))
-
-  return new ClobClient(
+  builderConfig,
+}) =>
+  new ClobClient(
     config.clobHost,
     config.chainId,
-    ethersSigner,
-    {
-      key: config.builderApiKey,
-      secret: config.builderSecret,
-      passphrase: config.builderPassphrase
-    },
-    2, // signatureType = 2 for embedded wallet EOA to sign for Safe proxy wallet
+    walletClient,
+    apiCreds,
+    signatureType,
     safeAddress,
     undefined, // mandatory placeholder
     false,
-    builderConfig // Builder order attribution
+    builderConfig, // Builder order attribution
   );
+
+export const createTradeClient = async (
+  {
+    config,
+    privateKey,
+    safeAddress,
+  }: BuildTradingClientArgs,
+  {
+    createWalletClientImpl = createTradingWalletClient,
+    createApiCredentialClient = createTradeApiCredentialClient,
+    createAuthenticatedClient = createAuthenticatedTradeClient,
+  }: CreateTradeClientDeps = {},
+): Promise<TradingClient> => {
+  try {
+    const walletClient = createWalletClientImpl(config, privateKey as Hex);
+    const builderConfig = createTradingBuilderConfig(config);
+    const apiCreds = await resolveTradeApiCreds({
+      config,
+      walletClient,
+      createApiCredentialClient,
+    });
+
+    return createAuthenticatedClient({
+      config,
+      walletClient,
+      apiCreds,
+      signatureType: SignatureType.POLY_GNOSIS_SAFE,
+      safeAddress,
+      builderConfig,
+    });
+  } catch (error) {
+    throw new UpstreamError(
+      "Failed to initialize the Polymarket trading client.",
+      error,
+    );
+  }
 };
 
 const normalizeNonEmptyString = (value: string, label: string) => {
@@ -183,6 +279,39 @@ const normalizeStoredAmount = (value: string | null) => {
   return amount;
 };
 
+const calculateBuyMarketPriceForShares = (
+  orderBook: Pick<OrderBookSummary, "asks">,
+  sharesToBuy: number,
+  orderType: OrderType,
+) => {
+  if (!orderBook.asks.length) {
+    throw new Error("no match");
+  }
+
+  let sharesMatched = 0;
+
+  for (let index = orderBook.asks.length - 1; index >= 0; index -= 1) {
+    const ask = orderBook.asks[index];
+    sharesMatched += Number.parseFloat(ask.size);
+
+    if (sharesMatched >= sharesToBuy) {
+      return Number.parseFloat(ask.price);
+    }
+  }
+
+  if (orderType === OrderType.FOK) {
+    throw new Error("no match");
+  }
+
+  return Number.parseFloat(orderBook.asks[0].price);
+};
+
+const calculateBuyOrderAmount = (shares: number, limitPrice: number) =>
+  normalizePositiveNumber(
+    Number.parseFloat((shares * limitPrice).toPrecision(12)),
+    "amount",
+  );
+
 const normalizeSide = (value: string) => {
   const side = value.trim().toUpperCase();
 
@@ -195,6 +324,16 @@ const normalizeSide = (value: string) => {
 
 const compareAvailableAmount = (available: string, required: number) =>
   Number.parseFloat(available) >= required;
+
+const parseAvailableAmount = (value: string, label: string) => {
+  const amount = Number.parseFloat(value);
+
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new UpstreamError(`Polymarket returned an invalid ${label} amount.`);
+  }
+
+  return amount;
+};
 
 const updateTradeAttemptFailure = (
   db: AppDatabase,
@@ -232,11 +371,13 @@ const updateTradeAttemptSuccess = (
 const updateTradeAttemptPrepared = (
   db: AppDatabase,
   attemptId: number,
+  amount: number,
   limitPrice: number,
 ) =>
   db
     .update(polymarketTradeAttempts)
     .set({
+      amount: String(amount),
       limitPrice: String(limitPrice),
     })
     .where(eq(polymarketTradeAttempts.id, attemptId))
@@ -261,6 +402,7 @@ export const createPolymarketTradeService = ({
     const outcomeName = normalizeNonEmptyString(input.outcome, "outcome");
     const side = normalizeSide(input.side);
     const orderType = "FOK" as const;
+    const marketOrderType = OrderType.FOK;
     const user = db
       .select({
         id: users.id,
@@ -295,7 +437,7 @@ export const createPolymarketTradeService = ({
       throw new ValidationError("Requested outcome was not found in the indexed market.");
     }
 
-    const amount = normalizeStoredAmount(market.orderMinSize);
+    const minimumShares = normalizeStoredAmount(market.orderMinSize);
     const startedAt = new Date().toISOString();
     let attemptId = 0;
 
@@ -309,7 +451,7 @@ export const createPolymarketTradeService = ({
           outcome: outcome.name,
           tokenId: outcome.tokenId,
           side,
-          amount: String(amount),
+          amount: String(minimumShares),
           limitPrice: "pending",
           orderType,
           status: "pending",
@@ -330,27 +472,45 @@ export const createPolymarketTradeService = ({
         safeAddress: user.safeAddress,
       });
       const orderSide = side === "BUY" ? Side.BUY : Side.SELL;
+      let amount = minimumShares;
+      let limitPrice: number;
+
+      if (side === "BUY") {
+        const orderBook = await client.getOrderBook(outcome.tokenId);
+        limitPrice = calculateBuyMarketPriceForShares(
+          orderBook,
+          minimumShares,
+          marketOrderType,
+        );
+        amount = calculateBuyOrderAmount(minimumShares, limitPrice);
+      }
+
       const balanceParams =
         side === "BUY"
           ? { asset_type: AssetType.COLLATERAL }
           : { asset_type: AssetType.CONDITIONAL, token_id: outcome.tokenId };
       const balance = await client.getBalanceAllowance(balanceParams);
 
-      if (!compareAvailableAmount(balance.balance, amount)) {
+      if (side === "SELL") {
+        const availableShares = parseAvailableAmount(balance.balance, "share balance");
+
+        if (availableShares <= 0) {
+          throw new ValidationError("Insufficient balance for the requested trade.");
+        }
+
+        amount = Math.min(amount, availableShares);
+        limitPrice = await client.calculateMarketPrice(
+          outcome.tokenId,
+          orderSide,
+          amount,
+          marketOrderType,
+        );
+      }
+
+      if (side === "BUY" && !compareAvailableAmount(balance.balance, amount)) {
         throw new ValidationError("Insufficient balance for the requested trade.");
       }
-
-      if (!compareAvailableAmount(balance.allowance, amount)) {
-        throw new ValidationError("Insufficient allowance for the requested trade.");
-      }
-
-      const limitPrice = await client.calculateMarketPrice(
-        outcome.tokenId,
-        orderSide,
-        amount,
-        OrderType.FOK,
-      );
-      updateTradeAttemptPrepared(db, attemptId, limitPrice);
+      updateTradeAttemptPrepared(db, attemptId, amount, limitPrice);
 
       const response = await client.createAndPostMarketOrder(
         {
@@ -358,13 +518,13 @@ export const createPolymarketTradeService = ({
           price: limitPrice,
           amount,
           side: orderSide,
-          orderType: OrderType.FOK,
+          orderType: marketOrderType,
         },
         {
           tickSize: market.tickSize as "0.1" | "0.01" | "0.001" | "0.0001",
           negRisk: market.negRisk,
         },
-        OrderType.FOK,
+        marketOrderType,
       );
 
       if (response.success === false) {

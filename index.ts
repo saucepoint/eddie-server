@@ -1,11 +1,12 @@
 import { createApp } from "./src/app";
 
-const port = Number(Bun.env.PORT ?? 3001);
+const port = Number(Bun.env.PORT ?? 3000);
 const app = createApp();
 
 if (import.meta.main) {
   Bun.serve({
     port,
+    hostname: "0.0.0.0",
     fetch: app.fetch,
     error(error) {
       console.error(error);
