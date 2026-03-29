@@ -41,7 +41,7 @@ export const bootstrapPolymarketWallet = async (
     config.relayerUrl,
     config.chainId,
     walletClient,
-    builderConfig,
+    builderConfig as never,
   );
 
   const contractConfig = getContractConfig(config.chainId);

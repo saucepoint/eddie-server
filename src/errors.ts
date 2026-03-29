@@ -15,6 +15,12 @@ export class ConflictError extends HttpError {
   }
 }
 
+export class ForbiddenError extends HttpError {
+  constructor(message: string) {
+    super(message, 403);
+  }
+}
+
 export class ConfigError extends HttpError {
   constructor(message: string) {
     super(message, 500);
@@ -30,6 +36,30 @@ export class CryptoError extends HttpError {
 export class DatabaseError extends HttpError {
   constructor(message: string, cause?: unknown) {
     super(message, 500, cause);
+  }
+}
+
+export class NotFoundError extends HttpError {
+  constructor(message: string) {
+    super(message, 404);
+  }
+}
+
+export class UnauthorizedError extends HttpError {
+  constructor(message: string) {
+    super(message, 401);
+  }
+}
+
+export class UpstreamError extends HttpError {
+  constructor(message: string, cause?: unknown) {
+    super(message, 502, cause);
+  }
+}
+
+export class ValidationError extends HttpError {
+  constructor(message: string) {
+    super(message, 422);
   }
 }
 

@@ -15,6 +15,7 @@
     "@polymarket/builder-signing-sdk": "^1.0.0",
     "@polymarket/clob-client": "^5.8.1",
     "drizzle-orm": "^0.45.2",
+    "ethers": "^6.16.0",
     "hono": "^4.12.9",
     "viem": "^2.47.6"
   }

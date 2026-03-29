@@ -1,12 +1,55 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import {
+  createPolymarketIndexService,
+  type FetchMarketBySlug,
+  type GetTokenTradingMeta,
+} from "./polymarket/indexing";
+import {
+  loadMarketRuntimeConfig,
+  type MarketRuntimeConfig,
+  type TradeRuntimeConfig,
+} from "./polymarket/config";
+import {
+  createPolymarketTradeService,
+  type BuildTradingClient,
+} from "./polymarket/trading";
 import { createUserService, type CreateUserServiceDeps } from "./users/service";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
-export const createApp = (deps: CreateUserServiceDeps = {}) => {
+type CreateAppDeps = CreateUserServiceDeps & {
+  loadPolymarketMarketConfig?: () => MarketRuntimeConfig;
+  fetchMarketBySlug?: FetchMarketBySlug;
+  getTokenTradingMeta?: GetTokenTradingMeta;
+  loadPolymarketTradeConfig?: () => TradeRuntimeConfig;
+  buildTradingClient?: BuildTradingClient;
+};
+
+const handleAppError = (error: unknown, c: Context) => {
+  if (error instanceof Error && "status" in error) {
+    const status = Number(error.status);
+    return c.json({ error: error.message }, status as never);
+  }
+
+  console.error(error);
+  return c.json({ error: "Internal server error" }, 500);
+};
+
+export const createApp = (deps: CreateAppDeps = {}) => {
   const app = new Hono();
   const createUser = createUserService(deps);
+  const indexPolymarketMarket = createPolymarketIndexService({
+    db: deps.db,
+    loadConfig: deps.loadPolymarketMarketConfig ?? loadMarketRuntimeConfig,
+    fetchMarketBySlug: deps.fetchMarketBySlug,
+    getTokenTradingMeta: deps.getTokenTradingMeta,
+  });
+  const tradePolymarketMarket = createPolymarketTradeService({
+    db: deps.db,
+    loadConfig: deps.loadPolymarketTradeConfig,
+    buildTradingClient: deps.buildTradingClient,
+  });
 
   app.get("/", c => c.json({ status: "ok" }));
 
@@ -55,13 +98,82 @@ export const createApp = (deps: CreateUserServiceDeps = {}) => {
 
       return c.json(result, result.created ? 201 : 200);
     } catch (error) {
-      if (error instanceof Error && "status" in error) {
-        const status = Number(error.status);
-        return c.json({ error: error.message }, status);
+      return handleAppError(error, c);
+    }
+  });
+
+  app.post("/polymarket/index", async c => {
+    let payload: unknown;
+
+    try {
+      payload = await c.req.json();
+    } catch {
+      return c.json({ error: "Request body must be valid JSON." }, 400);
+    }
+
+    if (!isRecord(payload) || typeof payload.market !== "string") {
+      return c.json(
+        { error: "`market` is required and must be a non-empty string." },
+        400,
+      );
+    }
+
+    try {
+      const config = (deps.loadPolymarketMarketConfig ?? loadMarketRuntimeConfig)();
+      const headerSecret = c.req.header("x-polymarket-test-secret")?.trim() ?? "";
+
+      if (headerSecret !== config.testEndpointSecret) {
+        return c.json({ error: "Unauthorized" }, 401);
       }
 
-      console.error(error);
-      return c.json({ error: "Internal server error" }, 500);
+      const result = await indexPolymarketMarket({ market: payload.market });
+      return c.json(result, 200);
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
+  app.post("/polymarket/trade", async c => {
+    let payload: unknown;
+
+    try {
+      payload = await c.req.json();
+    } catch {
+      return c.json({ error: "Request body must be valid JSON." }, 400);
+    }
+
+    if (
+      !isRecord(payload) ||
+      typeof payload.market !== "string" ||
+      typeof payload.outcome !== "string" ||
+      (payload.side !== "BUY" && payload.side !== "SELL")
+    ) {
+      return c.json(
+        {
+          error:
+            "`market` and `outcome` must be strings, and `side` must be `BUY` or `SELL`.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const config = (deps.loadPolymarketMarketConfig ?? loadMarketRuntimeConfig)();
+      const headerSecret = c.req.header("x-polymarket-test-secret")?.trim() ?? "";
+
+      if (headerSecret !== config.testEndpointSecret) {
+        return c.json({ error: "Unauthorized" }, 401);
+      }
+
+      const result = await tradePolymarketMarket({
+        market: payload.market,
+        outcome: payload.outcome,
+        side: payload.side,
+      });
+
+      return c.json(result, 200);
+    } catch (error) {
+      return handleAppError(error, c);
     }
   });
 
