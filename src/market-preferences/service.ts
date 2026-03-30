@@ -21,6 +21,9 @@ export type MarketPreference = {
   polymarketMarketId: number;
   rank: number;
   rationale: string;
+  hedgeOutcome: string | null;
+  hedgeTokenId: string | null;
+  hedgeSide: "BUY" | "SELL" | null;
   createdAt: string;
   updatedAt: string;
   userPreference: UserPreference & {
@@ -35,12 +38,18 @@ export type CreateMarketPreferenceInput = {
   polymarketMarketId: number;
   rank: number;
   rationale: string;
+  hedgeOutcome: string;
+  hedgeTokenId: string;
+  hedgeSide: "BUY" | "SELL";
 };
 
 export type UpdateMarketPreferenceInput = {
   id: number;
   rank: number;
   rationale: string;
+  hedgeOutcome?: string;
+  hedgeTokenId?: string;
+  hedgeSide?: "BUY" | "SELL";
 };
 
 export type GetMarketPreferenceInput = {
@@ -67,6 +76,9 @@ type JoinedMarketPreferenceRow = {
   polymarketMarketId: number;
   rank: number;
   rationale: string;
+  hedgeOutcome: string | null;
+  hedgeTokenId: string | null;
+  hedgeSide: string | null;
   createdAt: string;
   updatedAt: string;
   clerkUserId: string;
@@ -108,6 +120,31 @@ const normalizeRationale = (value: string) => {
   return trimmed;
 };
 
+const normalizeRequiredString = (value: string, label: string) => {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    throw new ValidationError(`\`${label}\` must be a non-empty string.`);
+  }
+
+  return trimmed;
+};
+
+const normalizeOptionalString = (value: string | null) => {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+};
+
+const normalizeHedgeSide = (value: string, label: string): "BUY" | "SELL" => {
+  const normalized = value.trim().toUpperCase();
+
+  if (normalized === "BUY" || normalized === "SELL") {
+    return normalized;
+  }
+
+  throw new ValidationError(`\`${label}\` must be \`BUY\` or \`SELL\`.`);
+};
+
 const parsePreferenceValue = (valueJson: string) => {
   try {
     return JSON.parse(valueJson) as UserPreference["value"];
@@ -122,6 +159,9 @@ const getMarketPreferenceSelect = () => ({
   polymarketMarketId: marketPreferences.polymarketMarketId,
   rank: marketPreferences.rank,
   rationale: marketPreferences.rationale,
+  hedgeOutcome: marketPreferences.hedgeOutcome,
+  hedgeTokenId: marketPreferences.hedgeTokenId,
+  hedgeSide: marketPreferences.hedgeSide,
   createdAt: marketPreferences.createdAt,
   updatedAt: marketPreferences.updatedAt,
   clerkUserId: users.clerkUserId,
@@ -204,6 +244,10 @@ const mapMarketPreference = (row: JoinedMarketPreferenceRow): MarketPreference =
   polymarketMarketId: row.polymarketMarketId,
   rank: row.rank,
   rationale: row.rationale,
+  hedgeOutcome: normalizeOptionalString(row.hedgeOutcome),
+  hedgeTokenId: normalizeOptionalString(row.hedgeTokenId),
+  hedgeSide:
+    row.hedgeSide === "BUY" || row.hedgeSide === "SELL" ? row.hedgeSide : null,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
   userPreference: mapUserPreference(row),
@@ -239,6 +283,58 @@ const ensurePolymarketMarketExists = (db: AppDatabase, id: number) => {
   }
 };
 
+type NormalizedHedgeSelection = {
+  hedgeOutcome: string;
+  hedgeTokenId: string;
+  hedgeSide: "BUY" | "SELL";
+};
+
+const normalizeHedgeSelection = (
+  db: AppDatabase,
+  polymarketMarketId: number,
+  input: {
+    hedgeOutcome: string;
+    hedgeTokenId: string;
+    hedgeSide: string;
+  },
+): NormalizedHedgeSelection => {
+  const hedgeOutcome = normalizeRequiredString(input.hedgeOutcome, "hedgeOutcome");
+  const hedgeTokenId = normalizeRequiredString(input.hedgeTokenId, "hedgeTokenId");
+  const hedgeSide = normalizeHedgeSide(input.hedgeSide, "hedgeSide");
+  const market = db
+    .select({
+      outcomesJson: polymarketMarkets.outcomesJson,
+      tokenIdsJson: polymarketMarkets.tokenIdsJson,
+    })
+    .from(polymarketMarkets)
+    .where(eq(polymarketMarkets.id, polymarketMarketId))
+    .get();
+
+  if (!market) {
+    throw new NotFoundError("Indexed Polymarket market not found.");
+  }
+
+  const outcomes = JSON.parse(market.outcomesJson) as string[];
+  const tokenIds = JSON.parse(market.tokenIdsJson) as string[];
+  const matchedIndex = outcomes.findIndex(
+    (outcome, index) =>
+      outcome.trim().toLowerCase() === hedgeOutcome.toLowerCase() &&
+      (tokenIds[index] ?? "") === hedgeTokenId,
+  );
+
+  if (matchedIndex === -1) {
+    throw new ValidationError(
+      "`hedgeOutcome` and `hedgeTokenId` must match the same indexed Polymarket market outcome.",
+    );
+  }
+
+  return {
+    hedgeOutcome: outcomes[matchedIndex]!.trim(),
+    hedgeTokenId,
+    hedgeSide,
+  };
+};
+
 const isDuplicateMarketPreferenceError = (error: unknown) =>
   error instanceof Error &&
   error.message.includes(
@@ -260,6 +356,11 @@ export const createCreateMarketPreferenceService = ({
     );
     const rank = normalizePositiveInteger(input.rank, "rank");
     const rationale = normalizeRationale(input.rationale);
+    const hedgeSelection = normalizeHedgeSelection(db, polymarketMarketId, {
+      hedgeOutcome: input.hedgeOutcome,
+      hedgeTokenId: input.hedgeTokenId,
+      hedgeSide: input.hedgeSide,
+    });
 
     ensureUserPreferenceExists(db, userPreferenceId);
     ensurePolymarketMarketExists(db, polymarketMarketId);
@@ -273,6 +374,9 @@ export const createCreateMarketPreferenceService = ({
           polymarketMarketId,
           rank,
           rationale,
+          hedgeOutcome: hedgeSelection.hedgeOutcome,
+          hedgeTokenId: hedgeSelection.hedgeTokenId,
+          hedgeSide: hedgeSelection.hedgeSide,
           createdAt: timestamp,
           updatedAt: timestamp,
         })
@@ -315,11 +419,34 @@ export const createUpdateMarketPreferenceService = ({
       throw new NotFoundError("Market preference not found.");
     }
 
+    const providedHedgeFieldCount = [
+      input.hedgeOutcome,
+      input.hedgeTokenId,
+      input.hedgeSide,
+    ].filter(value => value !== undefined).length;
+
+    if (providedHedgeFieldCount > 0 && providedHedgeFieldCount < 3) {
+      throw new ValidationError(
+        "`hedgeOutcome`, `hedgeTokenId`, and `hedgeSide` must be provided together when updating the hedge selection.",
+      );
+    }
+
+    const hedgeSelection = providedHedgeFieldCount === 3
+      ? normalizeHedgeSelection(db, existing.polymarketMarketId, {
+          hedgeOutcome: input.hedgeOutcome!,
+          hedgeTokenId: input.hedgeTokenId!,
+          hedgeSide: input.hedgeSide!,
+        })
+      : undefined;
+
     try {
       db.update(marketPreferences)
         .set({
           rank,
           rationale,
+          hedgeOutcome: hedgeSelection?.hedgeOutcome,
+          hedgeTokenId: hedgeSelection?.hedgeTokenId,
+          hedgeSide: hedgeSelection?.hedgeSide,
           updatedAt: new Date().toISOString(),
         })
         .where(eq(marketPreferences.id, id))

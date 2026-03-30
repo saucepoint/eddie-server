@@ -175,6 +175,9 @@ describe("Market preference routes", () => {
         polymarketMarketId: 1,
         rank: 1,
         rationale: "Rain exposure can offset the city's weather sensitivity.",
+        hedgeOutcome: "NO",
+        hedgeTokenId: "token-no",
+        hedgeSide: "BUY",
       }),
     );
     const createBody = await createResponse.json();
@@ -191,6 +194,9 @@ describe("Market preference routes", () => {
       createUpdateMarketPreferenceRequest(marketPreferenceId, {
         rank: 2,
         rationale: "Updated hedge rationale.",
+        hedgeOutcome: "YES",
+        hedgeTokenId: "token-yes",
+        hedgeSide: "SELL",
       }),
     );
     const updateBody = await updateResponse.json();
@@ -205,6 +211,9 @@ describe("Market preference routes", () => {
       polymarketMarketId: 1,
       rank: 1,
       rationale: "Rain exposure can offset the city's weather sensitivity.",
+      hedgeOutcome: "NO",
+      hedgeTokenId: "token-no",
+      hedgeSide: "BUY",
       userPreference: {
         id: userPreferenceId,
         clerkUserId: "user_123",
@@ -223,14 +232,25 @@ describe("Market preference routes", () => {
     expect(listBody.marketPreferences[0]).toMatchObject({
       id: marketPreferenceId,
       rank: 1,
+      hedgeOutcome: "NO",
+      hedgeTokenId: "token-no",
+      hedgeSide: "BUY",
     });
     expect(getResponse.status).toBe(200);
-    expect(getBody.marketPreference.id).toBe(marketPreferenceId);
+    expect(getBody.marketPreference).toMatchObject({
+      id: marketPreferenceId,
+      hedgeOutcome: "NO",
+      hedgeTokenId: "token-no",
+      hedgeSide: "BUY",
+    });
     expect(updateResponse.status).toBe(200);
     expect(updateBody.marketPreference).toMatchObject({
       id: marketPreferenceId,
       rank: 2,
       rationale: "Updated hedge rationale.",
+      hedgeOutcome: "YES",
+      hedgeTokenId: "token-yes",
+      hedgeSide: "SELL",
     });
     expect(deleteResponse.status).toBe(204);
     expect(db.select().from(marketPreferences).all()).toHaveLength(0);
@@ -255,6 +275,9 @@ describe("Market preference routes", () => {
         polymarketMarketId: 1,
         rank: 1,
         rationale: "Initial hedge.",
+        hedgeOutcome: "NO",
+        hedgeTokenId: "token-no",
+        hedgeSide: "BUY",
       }),
     );
 
@@ -264,6 +287,9 @@ describe("Market preference routes", () => {
         polymarketMarketId: 1,
         rank: 2,
         rationale: "Duplicate hedge.",
+        hedgeOutcome: "NO",
+        hedgeTokenId: "token-no",
+        hedgeSide: "BUY",
       }),
     );
     const body = await response.json();
@@ -288,13 +314,67 @@ describe("Market preference routes", () => {
     expect(response.status).toBe(400);
     expect(body).toEqual({
       error:
-        "`rank` must be a positive integer, `rationale` must be a non-empty string, and linked IDs cannot be updated.",
+        "`rank` must be a positive integer, `rationale` must be a non-empty string, linked IDs cannot be updated, and hedge fields must be supplied together with `hedgeSide` set to `BUY` or `SELL`.",
+    });
+  });
+
+  test("POST /market/preferences rejects mismatched hedge outcome and token pairs", async () => {
+    seedUser(db);
+    seedIndexedMarket(db);
+    const app = createApp({ db });
+    const preferenceResponse = await app.request(
+      createUserPreferenceRequest({
+        clerkUserId: "user_123",
+        topic: "cityId",
+        value: "boston-ma",
+      }),
+    );
+    const preferenceBody = await preferenceResponse.json();
+
+    const response = await app.request(
+      createMarketPreferenceRequest({
+        userPreferenceId: preferenceBody.preference.id,
+        polymarketMarketId: 1,
+        rank: 1,
+        rationale: "Bad hedge selection.",
+        hedgeOutcome: "YES",
+        hedgeTokenId: "token-no",
+        hedgeSide: "BUY",
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(422);
+    expect(body).toEqual({
+      error:
+        "`hedgeOutcome` and `hedgeTokenId` must match the same indexed Polymarket market outcome.",
+    });
+  });
+
+  test("PUT /market/preferences rejects partial hedge updates", async () => {
+    const app = createApp({ db });
+    const response = await app.request(
+      createUpdateMarketPreferenceRequest(1, {
+        rank: 1,
+        rationale: "Invalid update.",
+        hedgeOutcome: "NO",
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({
+      error:
+        "`rank` must be a positive integer, `rationale` must be a non-empty string, linked IDs cannot be updated, and hedge fields must be supplied together with `hedgeSide` set to `BUY` or `SELL`.",
     });
   });
 
   test("fresh migrations include the market_preferences table", () => {
     const tables = sqlite
       .query("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as Array<{ name: string }>;
+    const columns = sqlite
+      .query("PRAGMA table_info('market_preferences')")
       .all() as Array<{ name: string }>;
 
     expect(tables.map(table => table.name)).toEqual(
@@ -303,6 +383,13 @@ describe("Market preference routes", () => {
         "user_preferences",
         "polymarket_markets",
         "market_preferences",
+      ]),
+    );
+    expect(columns.map(column => column.name)).toEqual(
+      expect.arrayContaining([
+        "hedge_outcome",
+        "hedge_token_id",
+        "hedge_side",
       ]),
     );
   });

@@ -545,12 +545,17 @@ export const createApp = (deps: CreateAppDeps = {}) => {
       !isPositiveInteger(payload.polymarketMarketId) ||
       !isPositiveInteger(payload.rank) ||
       typeof payload.rationale !== "string" ||
-      payload.rationale.trim().length === 0
+      payload.rationale.trim().length === 0 ||
+      typeof payload.hedgeOutcome !== "string" ||
+      payload.hedgeOutcome.trim().length === 0 ||
+      typeof payload.hedgeTokenId !== "string" ||
+      payload.hedgeTokenId.trim().length === 0 ||
+      (payload.hedgeSide !== "BUY" && payload.hedgeSide !== "SELL")
     ) {
       return c.json(
         {
           error:
-            "`userPreferenceId`, `polymarketMarketId`, and `rank` must be positive integers, and `rationale` must be a non-empty string.",
+            "`userPreferenceId`, `polymarketMarketId`, and `rank` must be positive integers, `rationale`, `hedgeOutcome`, and `hedgeTokenId` must be non-empty strings, and `hedgeSide` must be `BUY` or `SELL`.",
         },
         400,
       );
@@ -562,6 +567,9 @@ export const createApp = (deps: CreateAppDeps = {}) => {
         polymarketMarketId: payload.polymarketMarketId,
         rank: payload.rank,
         rationale: payload.rationale,
+        hedgeOutcome: payload.hedgeOutcome,
+        hedgeTokenId: payload.hedgeTokenId,
+        hedgeSide: payload.hedgeSide,
       });
 
       return c.json({ marketPreference }, 201);
@@ -591,18 +599,43 @@ export const createApp = (deps: CreateAppDeps = {}) => {
       return c.json({ error: "Request body must be valid JSON." }, 400);
     }
 
+    const payloadRecord = isRecord(payload) ? payload : null;
+    const hasHedgeOutcome = payloadRecord
+      ? Object.prototype.hasOwnProperty.call(payloadRecord, "hedgeOutcome")
+      : false;
+    const hasHedgeTokenId = payloadRecord
+      ? Object.prototype.hasOwnProperty.call(payloadRecord, "hedgeTokenId")
+      : false;
+    const hasHedgeSide = payloadRecord
+      ? Object.prototype.hasOwnProperty.call(payloadRecord, "hedgeSide")
+      : false;
+    const updatingHedgeSelection = hasHedgeOutcome || hasHedgeTokenId || hasHedgeSide;
+
     if (
-      !isRecord(payload) ||
-      !isPositiveInteger(payload.rank) ||
-      typeof payload.rationale !== "string" ||
-      payload.rationale.trim().length === 0 ||
-      Object.prototype.hasOwnProperty.call(payload, "userPreferenceId") ||
-      Object.prototype.hasOwnProperty.call(payload, "polymarketMarketId")
+      !payloadRecord ||
+      !isPositiveInteger(payloadRecord.rank) ||
+      typeof payloadRecord.rationale !== "string" ||
+      payloadRecord.rationale.trim().length === 0 ||
+      Object.prototype.hasOwnProperty.call(payloadRecord, "userPreferenceId") ||
+      Object.prototype.hasOwnProperty.call(payloadRecord, "polymarketMarketId") ||
+      (
+        updatingHedgeSelection &&
+        (
+          !hasHedgeOutcome ||
+          !hasHedgeTokenId ||
+          !hasHedgeSide ||
+          typeof payloadRecord.hedgeOutcome !== "string" ||
+          payloadRecord.hedgeOutcome.trim().length === 0 ||
+          typeof payloadRecord.hedgeTokenId !== "string" ||
+          payloadRecord.hedgeTokenId.trim().length === 0 ||
+          (payloadRecord.hedgeSide !== "BUY" && payloadRecord.hedgeSide !== "SELL")
+        )
+      )
     ) {
       return c.json(
         {
           error:
-            "`rank` must be a positive integer, `rationale` must be a non-empty string, and linked IDs cannot be updated.",
+            "`rank` must be a positive integer, `rationale` must be a non-empty string, linked IDs cannot be updated, and hedge fields must be supplied together with `hedgeSide` set to `BUY` or `SELL`.",
         },
         400,
       );
@@ -611,8 +644,18 @@ export const createApp = (deps: CreateAppDeps = {}) => {
     try {
       const marketPreference = await updateMarketPreference({
         id,
-        rank: payload.rank,
-        rationale: payload.rationale,
+        rank: payloadRecord.rank,
+        rationale: payloadRecord.rationale,
+        hedgeOutcome: typeof payloadRecord.hedgeOutcome === "string"
+          ? payloadRecord.hedgeOutcome
+          : undefined,
+        hedgeTokenId: typeof payloadRecord.hedgeTokenId === "string"
+          ? payloadRecord.hedgeTokenId
+          : undefined,
+        hedgeSide:
+          payloadRecord.hedgeSide === "BUY" || payloadRecord.hedgeSide === "SELL"
+            ? payloadRecord.hedgeSide
+          : undefined,
       });
 
       return c.json({ marketPreference }, 200);
