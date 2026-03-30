@@ -1,6 +1,14 @@
 import { Hono, type Context } from "hono";
 import {
+  createCreateMarketPreferenceService,
+  createDeleteMarketPreferenceService,
+  createGetMarketPreferenceService,
+  createListMarketPreferencesService,
+  createUpdateMarketPreferenceService,
+} from "./market-preferences/service";
+import {
   createPolymarketIndexService,
+  createListIndexedPolymarketMarketsService,
   type FetchMarketBySlug,
   type GetTokenTradingMeta,
 } from "./polymarket/indexing";
@@ -19,6 +27,7 @@ import {
   createUpsertUserPreferenceService,
   createUpsertUserPreferencesService,
   type PreferenceValue,
+  type UserPreference,
 } from "./users/preferences";
 import { createUserService, type CreateUserServiceDeps } from "./users/service";
 
@@ -102,6 +111,82 @@ const mapPreferencesByRequestedTopics = (
   );
 };
 
+const mapPreferenceRecordsByRequestedTopics = (
+  topics: string[],
+  preferences: UserPreference[],
+) => {
+  const normalizedPreferences = new Map(
+    preferences.map(preference => [preference.topic, preference]),
+  );
+
+  return topics
+    .map(topic => normalizedPreferences.get(topic.trim().toLowerCase()))
+    .filter((preference): preference is UserPreference => preference !== undefined);
+};
+
+const buildBatchPreferenceResponse = (
+  preferences: UserPreference[],
+  requestedTopics: string[] | null,
+) => ({
+  preferences: requestedTopics
+    ? mapPreferencesByRequestedTopics(requestedTopics, preferences)
+    : Object.fromEntries(
+        preferences.map(preference => [
+          preference.topic,
+          preference.value,
+        ]),
+      ),
+  preferenceRecords: requestedTopics
+    ? mapPreferenceRecordsByRequestedTopics(requestedTopics, preferences)
+    : preferences,
+});
+
+const isPositiveInteger = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value > 0;
+
+const parseOptionalPositiveIntegerQuery = (value: string | undefined) => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(trimmed, 10);
+  return parsed > 0 ? parsed : null;
+};
+
+const parseRequiredPositiveIntegerParam = (value: string, label: string) => {
+  const parsed = parseOptionalPositiveIntegerQuery(value);
+
+  if (parsed === undefined || parsed === null) {
+    throw new Error(`\`${label}\` path param must be a positive integer.`);
+  }
+
+  return parsed;
+};
+
+const parseOptionalBooleanQuery = (value: string | undefined) => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (normalized === "true") {
+    return true;
+  }
+
+  if (normalized === "false") {
+    return false;
+  }
+
+  return null;
+};
+
 type CreateAppDeps = CreateUserServiceDeps & {
   loadPolymarketMarketConfig?: () => MarketRuntimeConfig;
   fetchMarketBySlug?: FetchMarketBySlug;
@@ -127,6 +212,11 @@ export const createApp = (deps: CreateAppDeps = {}) => {
   const upsertUserPreferences = createUpsertUserPreferencesService({ db: deps.db });
   const getUserPreference = createGetUserPreferenceService({ db: deps.db });
   const listUserPreferences = createListUserPreferencesService({ db: deps.db });
+  const createMarketPreference = createCreateMarketPreferenceService({ db: deps.db });
+  const updateMarketPreference = createUpdateMarketPreferenceService({ db: deps.db });
+  const getMarketPreference = createGetMarketPreferenceService({ db: deps.db });
+  const listMarketPreferences = createListMarketPreferencesService({ db: deps.db });
+  const deleteMarketPreference = createDeleteMarketPreferenceService({ db: deps.db });
   const indexPolymarketMarket = createPolymarketIndexService({
     db: deps.db,
     loadConfig: deps.loadPolymarketMarketConfig ?? loadMarketRuntimeConfig,
@@ -137,6 +227,9 @@ export const createApp = (deps: CreateAppDeps = {}) => {
     db: deps.db,
     loadConfig: deps.loadPolymarketTradeConfig,
     buildTradingClient: deps.buildTradingClient,
+  });
+  const listIndexedPolymarketMarkets = createListIndexedPolymarketMarketsService({
+    db: deps.db,
   });
 
   app.get("/", c => c.json({ status: "ok" }));
@@ -283,12 +376,7 @@ export const createApp = (deps: CreateAppDeps = {}) => {
       });
 
       return c.json(
-        {
-          preferences: mapPreferencesByRequestedTopics(
-            requestedTopics,
-            result.preferences,
-          ),
-        },
+        buildBatchPreferenceResponse(result.preferences, requestedTopics),
         200,
       );
     } catch (error) {
@@ -346,18 +434,210 @@ export const createApp = (deps: CreateAppDeps = {}) => {
       });
 
       return c.json(
-        {
-          preferences: requestedTopics
-            ? mapPreferencesByRequestedTopics(requestedTopics, preferences)
-            : Object.fromEntries(
-                preferences.map(preference => [
-                  preference.topic,
-                  preference.value,
-                ]),
-              ),
-        },
+        buildBatchPreferenceResponse(preferences, requestedTopics),
         200,
       );
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
+  app.get("/polymarket/markets", async c => {
+    const active = parseOptionalBooleanQuery(c.req.query("active"));
+    const acceptingOrders = parseOptionalBooleanQuery(
+      c.req.query("acceptingOrders"),
+    );
+    const closed = parseOptionalBooleanQuery(c.req.query("closed"));
+
+    if (active === null || acceptingOrders === null || closed === null) {
+      return c.json(
+        {
+          error:
+            "`active`, `acceptingOrders`, and `closed` query params must be `true` or `false` when provided.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const markets = await listIndexedPolymarketMarkets({
+        active,
+        acceptingOrders,
+        closed,
+      });
+      return c.json({ markets }, 200);
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
+  app.get("/market/preferences", async c => {
+    const rawClerkUserId = c.req.query("clerkUserId");
+    const clerkUserId = rawClerkUserId?.trim() ?? "";
+    const userPreferenceId = parseOptionalPositiveIntegerQuery(
+      c.req.query("userPreferenceId"),
+    );
+    const polymarketMarketId = parseOptionalPositiveIntegerQuery(
+      c.req.query("polymarketMarketId"),
+    );
+
+    if (
+      (rawClerkUserId !== undefined && !clerkUserId) ||
+      userPreferenceId === null ||
+      polymarketMarketId === null
+    ) {
+      return c.json(
+        {
+          error:
+            "`clerkUserId` must be a non-empty string, and `userPreferenceId` and `polymarketMarketId` must be positive integers when provided.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const marketPreferences = await listMarketPreferences({
+        clerkUserId: clerkUserId || undefined,
+        userPreferenceId,
+        polymarketMarketId,
+      });
+
+      return c.json({ marketPreferences }, 200);
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
+  app.get("/market/preferences/:id", async c => {
+    let id: number;
+
+    try {
+      id = parseRequiredPositiveIntegerParam(c.req.param("id"), "id");
+    } catch (error) {
+      return c.json(
+        {
+          error: error instanceof Error ? error.message : "Invalid `id` path param.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const marketPreference = await getMarketPreference({ id });
+      return c.json({ marketPreference }, 200);
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
+  app.post("/market/preferences", async c => {
+    let payload: unknown;
+
+    try {
+      payload = await c.req.json();
+    } catch {
+      return c.json({ error: "Request body must be valid JSON." }, 400);
+    }
+
+    if (
+      !isRecord(payload) ||
+      !isPositiveInteger(payload.userPreferenceId) ||
+      !isPositiveInteger(payload.polymarketMarketId) ||
+      !isPositiveInteger(payload.rank) ||
+      typeof payload.rationale !== "string" ||
+      payload.rationale.trim().length === 0
+    ) {
+      return c.json(
+        {
+          error:
+            "`userPreferenceId`, `polymarketMarketId`, and `rank` must be positive integers, and `rationale` must be a non-empty string.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const marketPreference = await createMarketPreference({
+        userPreferenceId: payload.userPreferenceId,
+        polymarketMarketId: payload.polymarketMarketId,
+        rank: payload.rank,
+        rationale: payload.rationale,
+      });
+
+      return c.json({ marketPreference }, 201);
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
+  app.put("/market/preferences/:id", async c => {
+    let payload: unknown;
+    let id: number;
+
+    try {
+      id = parseRequiredPositiveIntegerParam(c.req.param("id"), "id");
+    } catch (error) {
+      return c.json(
+        {
+          error: error instanceof Error ? error.message : "Invalid `id` path param.",
+        },
+        400,
+      );
+    }
+
+    try {
+      payload = await c.req.json();
+    } catch {
+      return c.json({ error: "Request body must be valid JSON." }, 400);
+    }
+
+    if (
+      !isRecord(payload) ||
+      !isPositiveInteger(payload.rank) ||
+      typeof payload.rationale !== "string" ||
+      payload.rationale.trim().length === 0 ||
+      Object.prototype.hasOwnProperty.call(payload, "userPreferenceId") ||
+      Object.prototype.hasOwnProperty.call(payload, "polymarketMarketId")
+    ) {
+      return c.json(
+        {
+          error:
+            "`rank` must be a positive integer, `rationale` must be a non-empty string, and linked IDs cannot be updated.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const marketPreference = await updateMarketPreference({
+        id,
+        rank: payload.rank,
+        rationale: payload.rationale,
+      });
+
+      return c.json({ marketPreference }, 200);
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
+  app.delete("/market/preferences/:id", async c => {
+    let id: number;
+
+    try {
+      id = parseRequiredPositiveIntegerParam(c.req.param("id"), "id");
+    } catch (error) {
+      return c.json(
+        {
+          error: error instanceof Error ? error.message : "Invalid `id` path param.",
+        },
+        400,
+      );
+    }
+
+    try {
+      await deleteMarketPreference({ id });
+      return c.body(null, 204);
     } catch (error) {
       return handleAppError(error, c);
     }

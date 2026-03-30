@@ -1,4 +1,4 @@
-import { eq, or } from "drizzle-orm";
+import { and, asc, eq, or } from "drizzle-orm";
 import { ClobClient } from "@polymarket/clob-client";
 import { getDb, type AppDatabase } from "../db/client";
 import { polymarketMarkets } from "../db/schema";
@@ -38,6 +38,12 @@ export type IndexedPolymarketMarket = {
 
 export type IndexPolymarketMarketInput = {
   market: string;
+};
+
+export type ListIndexedPolymarketMarketsInput = {
+  active?: boolean;
+  acceptingOrders?: boolean;
+  closed?: boolean;
 };
 
 export type FetchMarketBySlug = (
@@ -114,6 +120,13 @@ const selectIndexedMarket = (db: AppDatabase, slug: string) =>
     .select()
     .from(polymarketMarkets)
     .where(eq(polymarketMarkets.slug, slug))
+    .get();
+
+const selectIndexedMarketById = (db: AppDatabase, id: number) =>
+  db
+    .select()
+    .from(polymarketMarkets)
+    .where(eq(polymarketMarkets.id, id))
     .get();
 
 const rowToIndexedMarket = (row: MarketRow): IndexedPolymarketMarket => {
@@ -336,4 +349,41 @@ export const getIndexedPolymarketMarketBySlug = (
 ) => {
   const row = selectIndexedMarket(db, slug);
   return row ? rowToIndexedMarket(row) : null;
+};
+
+export const getIndexedPolymarketMarketById = (
+  db: AppDatabase,
+  id: number,
+) => {
+  const row = selectIndexedMarketById(db, id);
+  return row ? rowToIndexedMarket(row) : null;
+};
+
+export const createListIndexedPolymarketMarketsService = ({
+  db: injectedDb,
+}: Pick<CreatePolymarketIndexServiceDeps, "db"> = {}) => {
+  return async (
+    input: ListIndexedPolymarketMarketsInput = {},
+  ): Promise<IndexedPolymarketMarket[]> => {
+    const db = injectedDb ?? getDb();
+    const conditions = [
+      input.active === undefined
+        ? undefined
+        : eq(polymarketMarkets.active, input.active),
+      input.acceptingOrders === undefined
+        ? undefined
+        : eq(polymarketMarkets.acceptingOrders, input.acceptingOrders),
+      input.closed === undefined
+        ? undefined
+        : eq(polymarketMarkets.closed, input.closed),
+    ].filter((condition): condition is NonNullable<typeof condition> => condition !== undefined);
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const query = db
+      .select()
+      .from(polymarketMarkets)
+      .orderBy(asc(polymarketMarkets.id));
+    const rows = (whereClause ? query.where(whereClause) : query).all();
+
+    return rows.map(rowToIndexedMarket);
+  };
 };

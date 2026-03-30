@@ -1,4 +1,10 @@
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -69,6 +75,30 @@ export const userPreferences = sqliteTable(
     userTopicUnique: uniqueIndex("user_preferences_user_id_topic_unique").on(
       table.userId,
       table.topic,
+    ),
+  }),
+);
+
+export const marketPreferences = sqliteTable(
+  "market_preferences",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userPreferenceId: integer("user_preference_id").notNull(),
+    polymarketMarketId: integer("polymarket_market_id").notNull(),
+    rank: integer("rank").notNull(),
+    rationale: text("rationale").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  table => ({
+    userPreferenceMarketUnique: uniqueIndex(
+      "market_preferences_user_preference_id_polymarket_market_id_unique",
+    ).on(table.userPreferenceId, table.polymarketMarketId),
+    userPreferenceIndex: index("market_preferences_user_preference_id_idx").on(
+      table.userPreferenceId,
+    ),
+    polymarketMarketIndex: index("market_preferences_polymarket_market_id_idx").on(
+      table.polymarketMarketId,
     ),
   }),
 );
