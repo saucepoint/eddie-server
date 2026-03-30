@@ -144,9 +144,11 @@ describe("User preference routes", () => {
     expect(putBody).toEqual({
       created: true,
       preference: {
+        id: expect.any(Number),
         clerkUserId: "user_123",
         topic: "sports teams",
         value: ["knicks", "jets"],
+        marketPreferenceEligible: true,
         createdAt: expect.any(String),
         updatedAt: expect.any(String),
       },
@@ -194,12 +196,14 @@ describe("User preference routes", () => {
     expect(secondBody).toEqual({
       created: false,
       preference: {
+        id: firstBody.preference.id,
         clerkUserId: "user_123",
         topic: "city",
         value: {
           city: "Chicago",
           preferredTemperatureF: 68,
         },
+        marketPreferenceEligible: true,
         createdAt: firstBody.preference.createdAt,
         updatedAt: expect.any(String),
       },
@@ -322,6 +326,39 @@ describe("User preference routes", () => {
         cityId: "boston-ma",
         positionSize: 4,
       },
+      preferenceRecords: [
+        {
+          id: expect.any(Number),
+          clerkUserId: "user_123",
+          topic: "favoriteteamsbyleague",
+          value: {
+            nba: ["nba-knicks"],
+            nhl: ["nhl-rangers"],
+            mlb: ["mlb-yankees"],
+          },
+          marketPreferenceEligible: true,
+          createdAt: expect.any(String),
+          updatedAt: expect.any(String),
+        },
+        {
+          id: expect.any(Number),
+          clerkUserId: "user_123",
+          topic: "cityid",
+          value: "boston-ma",
+          marketPreferenceEligible: true,
+          createdAt: expect.any(String),
+          updatedAt: expect.any(String),
+        },
+        {
+          id: expect.any(Number),
+          clerkUserId: "user_123",
+          topic: "positionsize",
+          value: 4,
+          marketPreferenceEligible: true,
+          createdAt: expect.any(String),
+          updatedAt: expect.any(String),
+        },
+      ],
     });
     expect(getResponse.status).toBe(200);
     expect(getBody).toEqual(putBody);
@@ -356,12 +393,15 @@ describe("User preference routes", () => {
     const stored = db.select().from(userPreferences).all();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({
-      preferences: {
-        cityId: "seattle-wa",
-        positionSize: 8,
-      },
+    expect(body.preferences).toEqual({
+      cityId: "seattle-wa",
+      positionSize: 8,
     });
+    expect(body.preferenceRecords).toHaveLength(2);
+    expect(body.preferenceRecords.map((preference: { topic: string }) => preference.topic)).toEqual([
+      "cityid",
+      "positionsize",
+    ]);
     expect(stored).toHaveLength(2);
     expect(stored.map(preference => preference.topic).sort()).toEqual([
       "cityid",
@@ -403,6 +443,7 @@ describe("User preference routes", () => {
     expect(response.status).toBe(200);
     expect(body).toEqual({
       preferences: {},
+      preferenceRecords: [],
     });
   });
 
@@ -429,6 +470,26 @@ describe("User preference routes", () => {
         coverageTier: "high",
         cityId: "boston-ma",
       },
+      preferenceRecords: [
+        {
+          id: null,
+          clerkUserId: "user_123",
+          topic: "coveragetier",
+          value: "high",
+          marketPreferenceEligible: false,
+          createdAt: expect.any(String),
+          updatedAt: expect.any(String),
+        },
+        {
+          id: expect.any(Number),
+          clerkUserId: "user_123",
+          topic: "cityid",
+          value: "boston-ma",
+          marketPreferenceEligible: true,
+          createdAt: expect.any(String),
+          updatedAt: expect.any(String),
+        },
+      ],
     });
     expect(storedUser?.coverageTier).toBe("high");
     expect(storedPreferences.map(preference => preference.topic)).toEqual([

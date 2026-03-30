@@ -50,6 +50,13 @@
       "when": 1774837189867,
       "tag": "0006_lowly_expediter",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1774839217038,
+      "tag": "0007_pretty_synch",
+      "breakpoints": true
     }
   ]
 }

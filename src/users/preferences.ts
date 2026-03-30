@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { getDb, type AppDatabase } from "../db/client";
 import { userPreferences, users } from "../db/schema";
 import { DatabaseError, NotFoundError } from "../errors";
@@ -11,9 +11,11 @@ export type PreferenceValue =
   | { [key: string]: PreferenceValue };
 
 export type UserPreference = {
+  id: number | null;
   clerkUserId: string;
   topic: string;
   value: PreferenceValue;
+  marketPreferenceEligible: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -67,15 +69,18 @@ const parsePreferenceValue = (valueJson: string): PreferenceValue => {
 const mapPreference = (
   clerkUserId: string,
   row: {
+    id: number;
     topic: string;
     valueJson: string;
     createdAt: string;
     updatedAt: string;
   },
 ): UserPreference => ({
+  id: row.id,
   clerkUserId,
   topic: row.topic,
   value: parsePreferenceValue(row.valueJson),
+  marketPreferenceEligible: true,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
 });
@@ -114,9 +119,11 @@ const mapCoverageTierPreference = (
   coverageTier: string,
   updatedAt = "",
 ): UserPreference => ({
+  id: null,
   clerkUserId,
   topic: coverageTierTopic,
   value: coverageTier,
+  marketPreferenceEligible: false,
   createdAt: updatedAt,
   updatedAt,
 });
@@ -309,6 +316,7 @@ export const createGetUserPreferenceService = ({
 
     const preference = db
       .select({
+        id: userPreferences.id,
         topic: userPreferences.topic,
         valueJson: userPreferences.valueJson,
         createdAt: userPreferences.createdAt,
@@ -357,6 +365,7 @@ export const createListUserPreferencesService = ({
       : db
           .select(getPreferenceRecordColumns())
           .from(userPreferences)
+          .orderBy(asc(userPreferences.topic))
           .where(whereClause)
           .all();
 
