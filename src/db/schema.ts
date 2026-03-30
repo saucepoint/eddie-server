@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -53,3 +53,21 @@ export const polymarketTradeAttempts = sqliteTable("polymarket_trade_attempts", 
   startedAt: text("started_at").notNull(),
   completedAt: text("completed_at"),
 });
+
+export const userPreferences = sqliteTable(
+  "user_preferences",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id").notNull(),
+    topic: text("topic").notNull(),
+    valueJson: text("value_json").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  table => ({
+    userTopicUnique: uniqueIndex("user_preferences_user_id_topic_unique").on(
+      table.userId,
+      table.topic,
+    ),
+  }),
+);
