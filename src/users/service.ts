@@ -20,6 +20,7 @@ export type PublicUser = {
   clerkUserId: string;
   username: string;
   phoneNumber: string;
+  coverageTier: string;
   walletAddress: string;
   safeAddress: string;
   safeDeploymentTransactionHash: string;
@@ -58,6 +59,7 @@ const insertUser = (
       clerkUserId: input.clerkUserId,
       username: input.username,
       phoneNumber: input.phoneNumber,
+      coverageTier: "moderate",
       encryptedPrivateKey,
       walletAddress: wallet.walletAddress,
       safeAddress: wallet.safeAddress,
@@ -71,6 +73,7 @@ const insertUser = (
       clerkUserId: users.clerkUserId,
       username: users.username,
       phoneNumber: users.phoneNumber,
+      coverageTier: users.coverageTier,
       walletAddress: users.walletAddress,
       safeAddress: users.safeAddress,
       safeDeploymentTransactionHash: users.safeDeploymentTransactionHash,
@@ -92,6 +95,7 @@ export const createUserService = ({
         clerkUserId: users.clerkUserId,
         username: users.username,
         phoneNumber: users.phoneNumber,
+        coverageTier: users.coverageTier,
         walletAddress: users.walletAddress,
         safeAddress: users.safeAddress,
         safeDeploymentTransactionHash: users.safeDeploymentTransactionHash,
@@ -135,6 +139,7 @@ export const createUserService = ({
             clerkUserId: users.clerkUserId,
             username: users.username,
             phoneNumber: users.phoneNumber,
+            coverageTier: users.coverageTier,
             walletAddress: users.walletAddress,
             safeAddress: users.safeAddress,
             safeDeploymentTransactionHash: users.safeDeploymentTransactionHash,

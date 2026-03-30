@@ -5,6 +5,7 @@ export const users = sqliteTable("users", {
   clerkUserId: text("clerk_user_id").notNull().unique(),
   username: text("username").notNull(),
   phoneNumber: text("phone_number").notNull().unique(),
+  coverageTier: text("coverage_tier").notNull().default("moderate"),
   encryptedPrivateKey: text("encrypted_private_key").notNull(),
   walletAddress: text("wallet_address").notNull().unique(),
   safeAddress: text("safe_address").notNull().unique(),

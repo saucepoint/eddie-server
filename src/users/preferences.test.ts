@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { createApp } from "../app";
 import { createDatabaseClient } from "../db/client";
 import { userPreferences, users } from "../db/schema";
@@ -14,6 +15,29 @@ const createUserPreferenceQuery = (clerkUserId: string, topic: string) =>
   new Request(
     `http://localhost/user/preferences?clerkUserId=${encodeURIComponent(clerkUserId)}&topic=${encodeURIComponent(topic)}`,
   );
+
+const createBatchPreferenceRequest = (body: unknown) =>
+  new Request("http://localhost/user/preferences/batch", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+const createBatchPreferenceQuery = ({
+  clerkUserId,
+  topics,
+}: {
+  clerkUserId: string;
+  topics?: string[];
+}) => {
+  const params = new URLSearchParams({ clerkUserId });
+
+  if (topics) {
+    params.set("topics", topics.join(","));
+  }
+
+  return new Request(`http://localhost/user/preferences/batch?${params.toString()}`);
+};
 
 const seedUser = (
   db: ReturnType<typeof createDatabaseClient>["db"],
@@ -258,6 +282,158 @@ describe("User preference routes", () => {
 
     expect(response.status).toBe(404);
     expect(body).toEqual({ error: "User preference not found." });
+  });
+
+  test("PUT /user/preferences/batch stores and GET returns a topic map", async () => {
+    seedUser(db);
+
+    const app = createApp({ db });
+    const putResponse = await app.request(
+      createBatchPreferenceRequest({
+        clerkUserId: "user_123",
+        preferences: {
+          favoriteTeamsByLeague: {
+            nba: ["nba-knicks"],
+            nhl: ["nhl-rangers"],
+            mlb: ["mlb-yankees"],
+          },
+          cityId: "boston-ma",
+          positionSize: 4,
+        },
+      }),
+    );
+    const putBody = await putResponse.json();
+    const getResponse = await app.request(
+      createBatchPreferenceQuery({
+        clerkUserId: "user_123",
+        topics: ["favoriteTeamsByLeague", "cityId", "positionSize"],
+      }),
+    );
+    const getBody = await getResponse.json();
+
+    expect(putResponse.status).toBe(200);
+    expect(putBody).toEqual({
+      preferences: {
+        favoriteTeamsByLeague: {
+          nba: ["nba-knicks"],
+          nhl: ["nhl-rangers"],
+          mlb: ["mlb-yankees"],
+        },
+        cityId: "boston-ma",
+        positionSize: 4,
+      },
+    });
+    expect(getResponse.status).toBe(200);
+    expect(getBody).toEqual(putBody);
+  });
+
+  test("PUT /user/preferences/batch updates existing topics and preserves one row per topic", async () => {
+    seedUser(db);
+
+    const app = createApp({ db });
+    await app.request(
+      createBatchPreferenceRequest({
+        clerkUserId: "user_123",
+        preferences: {
+          cityId: "boston-ma",
+          positionSize: 4,
+        },
+      }),
+    );
+
+    await Bun.sleep(5);
+
+    const response = await app.request(
+      createBatchPreferenceRequest({
+        clerkUserId: "user_123",
+        preferences: {
+          cityId: "seattle-wa",
+          positionSize: 8,
+        },
+      }),
+    );
+    const body = await response.json();
+    const stored = db.select().from(userPreferences).all();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      preferences: {
+        cityId: "seattle-wa",
+        positionSize: 8,
+      },
+    });
+    expect(stored).toHaveLength(2);
+    expect(stored.map(preference => preference.topic).sort()).toEqual([
+      "cityid",
+      "positionsize",
+    ]);
+  });
+
+  test("PUT /user/preferences/batch returns 400 for invalid payloads", async () => {
+    const app = createApp({ db });
+    const response = await app.request(
+      createBatchPreferenceRequest({
+        clerkUserId: "user_123",
+        preferences: {
+          cityId: null,
+        },
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({
+      error:
+        "`clerkUserId` is required, and `preferences` must be a non-empty object whose values are non-null JSON values.",
+    });
+  });
+
+  test("GET /user/preferences/batch returns an empty map when the user has no saved preferences", async () => {
+    seedUser(db);
+
+    const app = createApp({ db });
+    const response = await app.request(
+      createBatchPreferenceQuery({
+        clerkUserId: "user_123",
+        topics: ["cityId", "positionSize"],
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      preferences: {},
+    });
+  });
+
+  test("coverageTier is stored on the user row instead of user_preferences", async () => {
+    seedUser(db);
+
+    const app = createApp({ db });
+    const response = await app.request(
+      createBatchPreferenceRequest({
+        clerkUserId: "user_123",
+        preferences: {
+          coverageTier: "high",
+          cityId: "boston-ma",
+        },
+      }),
+    );
+    const body = await response.json();
+    const storedPreferences = db.select().from(userPreferences).all();
+    const storedUser = db.select().from(users).where(eq(users.clerkUserId, "user_123")).get();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      preferences: {
+        coverageTier: "high",
+        cityId: "boston-ma",
+      },
+    });
+    expect(storedUser?.coverageTier).toBe("high");
+    expect(storedPreferences.map(preference => preference.topic)).toEqual([
+      "cityid",
+    ]);
   });
 
   test("fresh migrations include the user_preferences table", () => {
