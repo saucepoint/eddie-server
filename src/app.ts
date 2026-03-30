@@ -13,10 +13,39 @@ import {
   createPolymarketTradeService,
   type BuildTradingClient,
 } from "./polymarket/trading";
+import {
+  createGetUserPreferenceService,
+  createUpsertUserPreferenceService,
+  type PreferenceValue,
+} from "./users/preferences";
 import { createUserService, type CreateUserServiceDeps } from "./users/service";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+const isPreferenceValue = (value: unknown): value is PreferenceValue => {
+  if (value === null) {
+    return false;
+  }
+
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+
+  if (Array.isArray(value)) {
+    return value.every(isPreferenceValue);
+  }
+
+  if (isRecord(value)) {
+    return Object.values(value).every(isPreferenceValue);
+  }
+
+  return false;
+};
 
 type CreateAppDeps = CreateUserServiceDeps & {
   loadPolymarketMarketConfig?: () => MarketRuntimeConfig;
@@ -39,6 +68,8 @@ const handleAppError = (error: unknown, c: Context) => {
 export const createApp = (deps: CreateAppDeps = {}) => {
   const app = new Hono();
   const createUser = createUserService(deps);
+  const upsertUserPreference = createUpsertUserPreferenceService({ db: deps.db });
+  const getUserPreference = createGetUserPreferenceService({ db: deps.db });
   const indexPolymarketMarket = createPolymarketIndexService({
     db: deps.db,
     loadConfig: deps.loadPolymarketMarketConfig ?? loadMarketRuntimeConfig,
@@ -97,6 +128,74 @@ export const createApp = (deps: CreateAppDeps = {}) => {
       });
 
       return c.json(result, result.created ? 201 : 200);
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
+  app.put("/user/preferences", async c => {
+    let payload: unknown;
+
+    try {
+      payload = await c.req.json();
+    } catch {
+      return c.json({ error: "Request body must be valid JSON." }, 400);
+    }
+
+    if (!isRecord(payload)) {
+      return c.json(
+        {
+          error:
+            "`clerkUserId` and `topic` are required non-empty strings, and `value` must be a non-null JSON value.",
+        },
+        400,
+      );
+    }
+
+    const clerkUserId =
+      typeof payload.clerkUserId === "string" ? payload.clerkUserId.trim() : "";
+    const topic = typeof payload.topic === "string" ? payload.topic.trim() : "";
+    const hasValue = Object.prototype.hasOwnProperty.call(payload, "value");
+
+    if (!clerkUserId || !topic || !hasValue || !isPreferenceValue(payload.value)) {
+      return c.json(
+        {
+          error:
+            "`clerkUserId` and `topic` are required non-empty strings, and `value` must be a non-null JSON value.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const result = await upsertUserPreference({
+        clerkUserId,
+        topic,
+        value: payload.value,
+      });
+
+      return c.json(result, result.created ? 201 : 200);
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
+  app.get("/user/preferences", async c => {
+    const clerkUserId = c.req.query("clerkUserId")?.trim() ?? "";
+    const topic = c.req.query("topic")?.trim() ?? "";
+
+    if (!clerkUserId || !topic) {
+      return c.json(
+        {
+          error: "`clerkUserId` and `topic` query params are required non-empty strings.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const preference = await getUserPreference({ clerkUserId, topic });
+      return c.json({ preference }, 200);
     } catch (error) {
       return handleAppError(error, c);
     }
