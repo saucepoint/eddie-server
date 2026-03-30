@@ -15,7 +15,9 @@ import {
 } from "./polymarket/trading";
 import {
   createGetUserPreferenceService,
+  createListUserPreferencesService,
   createUpsertUserPreferenceService,
+  createUpsertUserPreferencesService,
   type PreferenceValue,
 } from "./users/preferences";
 import { createUserService, type CreateUserServiceDeps } from "./users/service";
@@ -47,6 +49,59 @@ const isPreferenceValue = (value: unknown): value is PreferenceValue => {
   return false;
 };
 
+const normalizeTopic = (topic: string) => topic.trim().toLowerCase();
+
+const isCoverageTierValue = (value: unknown): value is "low" | "moderate" | "high" =>
+  value === "low" || value === "moderate" || value === "high";
+
+const isPreferenceMap = (
+  value: unknown,
+): value is Record<string, PreferenceValue> => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const entries = Object.entries(value);
+
+  return (
+    entries.length > 0 &&
+    entries.every(
+      ([topic, preferenceValue]) =>
+        topic.trim().length > 0 &&
+        isPreferenceValue(preferenceValue) &&
+        (normalizeTopic(topic) !== "coveragetier" || isCoverageTierValue(preferenceValue)),
+    )
+  );
+};
+
+const parseRequestedTopics = (topicsQuery: string | undefined) => {
+  if (!topicsQuery) {
+    return null;
+  }
+
+  const topics = topicsQuery
+    .split(",")
+    .map(topic => topic.trim())
+    .filter(Boolean);
+
+  return topics.length > 0 ? topics : [];
+};
+
+const mapPreferencesByRequestedTopics = (
+  topics: string[],
+  preferences: { topic: string; value: PreferenceValue }[],
+) => {
+  const normalizedPreferences = new Map(
+    preferences.map(preference => [preference.topic, preference.value]),
+  );
+
+  return Object.fromEntries(
+    topics
+      .map(topic => [topic, normalizedPreferences.get(topic.trim().toLowerCase())] as const)
+      .filter((entry): entry is [string, PreferenceValue] => entry[1] !== undefined),
+  );
+};
+
 type CreateAppDeps = CreateUserServiceDeps & {
   loadPolymarketMarketConfig?: () => MarketRuntimeConfig;
   fetchMarketBySlug?: FetchMarketBySlug;
@@ -69,7 +124,9 @@ export const createApp = (deps: CreateAppDeps = {}) => {
   const app = new Hono();
   const createUser = createUserService(deps);
   const upsertUserPreference = createUpsertUserPreferenceService({ db: deps.db });
+  const upsertUserPreferences = createUpsertUserPreferencesService({ db: deps.db });
   const getUserPreference = createGetUserPreferenceService({ db: deps.db });
+  const listUserPreferences = createListUserPreferencesService({ db: deps.db });
   const indexPolymarketMarket = createPolymarketIndexService({
     db: deps.db,
     loadConfig: deps.loadPolymarketMarketConfig ?? loadMarketRuntimeConfig,
@@ -157,7 +214,13 @@ export const createApp = (deps: CreateAppDeps = {}) => {
     const topic = typeof payload.topic === "string" ? payload.topic.trim() : "";
     const hasValue = Object.prototype.hasOwnProperty.call(payload, "value");
 
-    if (!clerkUserId || !topic || !hasValue || !isPreferenceValue(payload.value)) {
+    if (
+      !clerkUserId ||
+      !topic ||
+      !hasValue ||
+      !isPreferenceValue(payload.value) ||
+      (normalizeTopic(topic) === "coveragetier" && !isCoverageTierValue(payload.value))
+    ) {
       return c.json(
         {
           error:
@@ -180,6 +243,59 @@ export const createApp = (deps: CreateAppDeps = {}) => {
     }
   });
 
+  app.put("/user/preferences/batch", async c => {
+    let payload: unknown;
+
+    try {
+      payload = await c.req.json();
+    } catch {
+      return c.json({ error: "Request body must be valid JSON." }, 400);
+    }
+
+    if (!isRecord(payload)) {
+      return c.json(
+        {
+          error:
+            "`clerkUserId` is required, and `preferences` must be a non-empty object whose values are non-null JSON values.",
+        },
+        400,
+      );
+    }
+
+    const clerkUserId =
+      typeof payload.clerkUserId === "string" ? payload.clerkUserId.trim() : "";
+
+    if (!clerkUserId || !isPreferenceMap(payload.preferences)) {
+      return c.json(
+        {
+          error:
+            "`clerkUserId` is required, and `preferences` must be a non-empty object whose values are non-null JSON values.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const requestedTopics = Object.keys(payload.preferences);
+      const result = await upsertUserPreferences({
+        clerkUserId,
+        preferences: payload.preferences,
+      });
+
+      return c.json(
+        {
+          preferences: mapPreferencesByRequestedTopics(
+            requestedTopics,
+            result.preferences,
+          ),
+        },
+        200,
+      );
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
   app.get("/user/preferences", async c => {
     const clerkUserId = c.req.query("clerkUserId")?.trim() ?? "";
     const topic = c.req.query("topic")?.trim() ?? "";
@@ -196,6 +312,52 @@ export const createApp = (deps: CreateAppDeps = {}) => {
     try {
       const preference = await getUserPreference({ clerkUserId, topic });
       return c.json({ preference }, 200);
+    } catch (error) {
+      return handleAppError(error, c);
+    }
+  });
+
+  app.get("/user/preferences/batch", async c => {
+    const clerkUserId = c.req.query("clerkUserId")?.trim() ?? "";
+    const requestedTopics = parseRequestedTopics(c.req.query("topics"));
+
+    if (!clerkUserId) {
+      return c.json(
+        {
+          error: "`clerkUserId` query param is required as a non-empty string.",
+        },
+        400,
+      );
+    }
+
+    if (requestedTopics && requestedTopics.length === 0) {
+      return c.json(
+        {
+          error: "`topics` query param must contain at least one non-empty topic when provided.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const preferences = await listUserPreferences({
+        clerkUserId,
+        topics: requestedTopics ?? undefined,
+      });
+
+      return c.json(
+        {
+          preferences: requestedTopics
+            ? mapPreferencesByRequestedTopics(requestedTopics, preferences)
+            : Object.fromEntries(
+                preferences.map(preference => [
+                  preference.topic,
+                  preference.value,
+                ]),
+              ),
+        },
+        200,
+      );
     } catch (error) {
       return handleAppError(error, c);
     }

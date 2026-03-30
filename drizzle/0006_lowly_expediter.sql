@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `coverage_tier` text DEFAULT 'moderate' NOT NULL;

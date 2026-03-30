@@ -130,6 +130,7 @@ describe("POST /user", () => {
         clerkUserId: "user_123",
         username: "existing",
         phoneNumber: "555-0100",
+        coverageTier: "moderate",
         walletAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         safeAddress: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         safeDeploymentTransactionHash:
@@ -208,6 +209,7 @@ describe("POST /user", () => {
         clerkUserId: "user_123",
         username: "alice",
         phoneNumber: "555-0101",
+        coverageTier: "moderate",
         walletAddress: bootstrapResult.walletAddress,
         safeAddress: bootstrapResult.safeAddress,
         safeDeploymentTransactionHash:
@@ -221,6 +223,7 @@ describe("POST /user", () => {
     expect(stored).toBeDefined();
     expect(stored?.clerkUserId).toBe("user_123");
     expect(stored?.username).toBe("alice");
+    expect(stored?.coverageTier).toBe("moderate");
     expect(stored?.encryptedPrivateKey).not.toBe(bootstrapResult.privateKey);
     expect(
       decryptPrivateKey(stored!.encryptedPrivateKey, testConfig.encryptionKey),
@@ -329,6 +332,7 @@ describe("POST /user", () => {
       "safe_deployment_transaction_hash",
       "approval_transaction_id",
       "approval_transaction_hash",
+      "coverage_tier",
     ]);
 
     await sqlite.close();
